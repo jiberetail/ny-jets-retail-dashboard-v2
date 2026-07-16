@@ -73,14 +73,10 @@ input:focus-visible {
 }
 
 .brand-logo {
-  width: 82px;
-  height: 54px;
-  flex: 0 0 82px;
+  width: 72px;
+  height: 50px;
+  flex: 0 0 72px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 6px;
-  background: #ffffff;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
 }
 
 .brand-logo img {
@@ -88,6 +84,7 @@ input:focus-visible {
   height: 100%;
   object-fit: contain;
   transform: scale(1.8);
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.3));
 }
 
 .brand-copy {
@@ -106,8 +103,9 @@ input:focus-visible {
 
 .brand-block strong {
   display: block;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.15;
+  white-space: nowrap;
 }
 
 .brand-block span {
@@ -1230,6 +1228,10 @@ input:focus-visible {
 
 @media (max-width: 1240px) {
   .dashboard-shell { grid-template-columns: 224px minmax(0, 1fr); }
+  .brand-block { gap: 8px; padding-inline: 0; }
+  .brand-logo { width: 58px; height: 44px; flex-basis: 58px; }
+  .brand-block strong { font-size: 11.5px; }
+  .brand-block span { font-size: 9.5px; }
   .sidebar nav button { grid-template-columns: 20px minmax(0, 1fr); }
   .sidebar nav button > svg:last-child { display: none; }
   .impact-band { grid-template-columns: minmax(0, 1fr) 460px; }
