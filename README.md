@@ -8,7 +8,7 @@ This project is separate from the existing NY Jets dashboard suite.
 
 ## Public Dashboard
 
-[Open NY Jets Kiosk Intelligence](https://jiberetail.github.io/ny-jets-retail-dashboard-v2/)
+[Open Jibe Kiosk Intelligence for the NY Jets](https://jiberetail.github.io/ny-jets-retail-dashboard-v2/)
 
 ## Development
 

@@ -48,7 +48,7 @@ import {
   Users,
   Zap,
 } from "lucide-react";
-import jetsLogo from "../imports/new-york-jets-logo-0.png";
+import jibeRetailLogo from "../imports/jibe-retail-logo.png";
 
 type ViewId = "overview" | "roi" | "funnel" | "services" | "merchandise" | "experience";
 type PeriodKey = "game" | "four" | "season";
@@ -762,8 +762,10 @@ function App() {
     <div className="dashboard-shell">
       <aside className="sidebar">
         <div className="brand-block">
-          <img src={jetsLogo} alt="New York Jets" />
-          <div><strong>Game Day Commerce</strong><span>Kiosk Intelligence</span></div>
+          <div className="brand-logo">
+            <img src={jibeRetailLogo} alt="Jibe Retail" />
+          </div>
+          <div className="brand-copy"><strong>Game Day Commerce</strong><span>Jibe Kiosk Intelligence</span></div>
         </div>
 
         <nav aria-label="Dashboard views">
