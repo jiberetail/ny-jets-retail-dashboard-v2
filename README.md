@@ -6,6 +6,11 @@ conversion, fulfillment services, product demand, and guest experience.
 
 This project is separate from the existing NY Jets dashboard suite.
 
+The Stadium Orders view receives cross-device order changes through the shared
+Upstash Realtime feed and keeps a low-frequency API refresh as a recovery path.
+Its local cache and mutation queue preserve staff work through brief network
+interruptions.
+
 ## Public Dashboard
 
 [Open Jibe Kiosk Intelligence for the NY Jets](https://jiberetail.github.io/ny-jets-retail-dashboard-v2/)

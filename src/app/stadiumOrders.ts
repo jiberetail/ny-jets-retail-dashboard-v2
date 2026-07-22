@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRealtime } from "./realtime";
 
 const ORDERS_KEY = "jibe-jets-stadium-orders-v2";
 const MUTATIONS_KEY = "jibe-jets-stadium-orders-mutations-v2";
 const ORDERS_API_URL = "https://ny-jets-retail-orders-v2.vercel.app/api/orders";
-const POLL_INTERVAL_MS = 3000;
+const REALTIME_CHANNEL = "stadium-orders-v2";
+const SAFETY_SYNC_INTERVAL_MS = 60_000;
+const HIDDEN_SYNC_INTERVAL_MS = 300_000;
 const REQUEST_TIMEOUT_MS = 10000;
 
 export type StadiumOrderService = "concierge" | "suite";
@@ -53,6 +56,13 @@ type PendingMutation = {
   orderId: string;
 };
 
+type OrderChange = {
+  kind: "upsert" | "delete";
+  orderId: string;
+  order?: unknown;
+  recordedAt: string;
+};
+
 function isStadiumOrder(value: unknown): value is StadiumOrder {
   if (!value || typeof value !== "object") return false;
   const order = value as Partial<StadiumOrder>;
@@ -75,6 +85,18 @@ function isStadiumOrder(value: unknown): value is StadiumOrder {
     && typeof order.subtotal === "number"
     && typeof order.tax === "number"
     && typeof order.total === "number";
+}
+
+function isOrderChange(value: unknown): value is OrderChange {
+  if (!value || typeof value !== "object") return false;
+  const change = value as Partial<OrderChange>;
+  return (change.kind === "upsert" || change.kind === "delete")
+    && typeof change.orderId === "string"
+    && typeof change.recordedAt === "string";
+}
+
+function newestFirst(left: StadiumOrder, right: StadiumOrder) {
+  return Date.parse(right.createdAt) - Date.parse(left.createdAt);
 }
 
 function readStoredOrders() {
@@ -208,6 +230,48 @@ export function useStadiumOrders() {
     setOrders(nextOrders);
   }, []);
 
+  const applyRemoteChange = useCallback((change: OrderChange) => {
+    if (change.kind === "delete") {
+      knownOrderIdsRef.current.delete(change.orderId);
+      replaceOrders(ordersRef.current.filter((order) => order.id !== change.orderId));
+      setLinkStatus("live");
+      return;
+    }
+
+    if (!isStadiumOrder(change.order)) return;
+    const incomingOrder = change.order;
+    const currentOrder = ordersRef.current.find((order) => order.id === incomingOrder.id);
+    if (currentOrder && Date.parse(currentOrder.updatedAt) > Date.parse(incomingOrder.updatedAt)) return;
+
+    const isNewOrder = !knownOrderIdsRef.current.has(incomingOrder.id);
+    const nextOrders = currentOrder
+      ? ordersRef.current.map((order) => order.id === incomingOrder.id ? incomingOrder : order)
+      : [incomingOrder, ...ordersRef.current];
+
+    knownOrderIdsRef.current.add(incomingOrder.id);
+    replaceOrders(nextOrders.sort(newestFirst));
+    if (isNewOrder) setLastReceivedOrderId(incomingOrder.id);
+    setLinkStatus("live");
+  }, [replaceOrders]);
+
+  const { status: realtimeStatus } = useRealtime({
+    channels: [REALTIME_CHANNEL],
+    events: ["orders.changed"],
+    onData: ({ data }) => {
+      if (isOrderChange(data)) applyRemoteChange(data);
+    },
+  });
+
+  useEffect(() => {
+    if (!navigator.onLine) {
+      setLinkStatus("offline");
+      return;
+    }
+    if (realtimeStatus === "connected") setLinkStatus("live");
+    else if (realtimeStatus === "connecting") setLinkStatus("connecting");
+    else setLinkStatus("reconnecting");
+  }, [realtimeStatus]);
+
   useEffect(() => {
     let stopped = false;
     let syncing = false;
@@ -229,7 +293,7 @@ export function useStadiumOrders() {
       }
       if (!navigator.onLine) {
         setLinkStatus("offline");
-        scheduleSync(POLL_INTERVAL_MS);
+        scheduleSync(SAFETY_SYNC_INTERVAL_MS);
         return;
       }
 
@@ -253,7 +317,10 @@ export function useStadiumOrders() {
         if (!stopped) setLinkStatus(navigator.onLine ? "reconnecting" : "offline");
       } finally {
         syncing = false;
-        const delay = syncAgain ? 0 : POLL_INTERVAL_MS;
+        const fallbackDelay = document.visibilityState === "visible"
+          ? SAFETY_SYNC_INTERVAL_MS
+          : HIDDEN_SYNC_INTERVAL_MS;
+        const delay = syncAgain ? 0 : fallbackDelay;
         syncAgain = false;
         scheduleSync(delay);
       }
