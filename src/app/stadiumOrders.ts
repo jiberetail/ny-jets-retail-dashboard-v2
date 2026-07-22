@@ -2,7 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Peer, type DataConnection } from "peerjs";
 
 export const STADIUM_ORDERS_CHANNEL = "jets-stadium-orders-v2";
-export const STADIUM_ORDERS_DASHBOARD_PEER_ID = "jibe-jets-stadium-orders-v2";
+export const STADIUM_ORDERS_DASHBOARD_PEER_IDS = [
+  "jibe-jets-stadium-orders-v2",
+  "jibe-jets-stadium-orders-v2-backup-1",
+  "jibe-jets-stadium-orders-v2-backup-2",
+] as const;
 
 const ORDERS_KEY = "jibe-jets-stadium-orders-v2";
 
@@ -100,6 +104,7 @@ export function useStadiumOrders() {
     let peer: Peer | null = null;
     let reconnectTimer = 0;
     let stopped = false;
+    let generation = 0;
 
     const receiveConnection = (connection: DataConnection) => {
       if (connection.metadata?.channel !== STADIUM_ORDERS_CHANNEL) {
@@ -129,28 +134,75 @@ export function useStadiumOrders() {
       });
     };
 
-    const connect = () => {
-      if (stopped) return;
-      setLinkStatus("connecting");
-      peer = new Peer(STADIUM_ORDERS_DASHBOARD_PEER_ID, { debug: 1 });
+    const clearReconnectTimer = () => {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = 0;
+    };
 
-      peer.on("open", () => setLinkStatus("live"));
-      peer.on("connection", receiveConnection);
-      peer.on("disconnected", () => {
-        if (stopped) return;
-        setLinkStatus("reconnecting");
-        peer?.destroy();
-        reconnectTimer = window.setTimeout(connect, 3500);
+    const schedulePeer = (
+      peerIndex: number,
+      delay: number,
+      status: StadiumOrdersLinkStatus = "reconnecting",
+    ) => {
+      if (stopped) return;
+      const scheduledGeneration = ++generation;
+      const retiredPeer = peer;
+      peer = null;
+      clearReconnectTimer();
+      setLinkStatus(status);
+      retiredPeer?.destroy();
+
+      reconnectTimer = window.setTimeout(() => {
+        if (stopped || scheduledGeneration !== generation) return;
+        openPeer(peerIndex);
+      }, delay);
+    };
+
+    const openPeer = (peerIndex: number) => {
+      if (stopped) return;
+      clearReconnectTimer();
+      const peerGeneration = ++generation;
+      const peerId = STADIUM_ORDERS_DASHBOARD_PEER_IDS[peerIndex];
+      const nextPeer = new Peer(peerId, { debug: 1, pingInterval: 5000 });
+      peer = nextPeer;
+      setLinkStatus(peerIndex === 0 ? "connecting" : "reconnecting");
+
+      const isCurrentPeer = () => !stopped && peerGeneration === generation && peer === nextPeer;
+      const nextPeerIndex = (peerIndex + 1) % STADIUM_ORDERS_DASHBOARD_PEER_IDS.length;
+
+      nextPeer.on("open", () => {
+        if (!isCurrentPeer()) return;
+        clearReconnectTimer();
+        setLinkStatus("live");
       });
-      peer.on("error", (error) => {
-        if (stopped) return;
-        if (error.type === "unavailable-id") {
-          setLinkStatus("conflict");
+      nextPeer.on("connection", receiveConnection);
+      nextPeer.on("disconnected", () => {
+        if (!isCurrentPeer()) return;
+        setLinkStatus("reconnecting");
+        clearReconnectTimer();
+
+        try {
+          nextPeer.reconnect();
+        } catch {
+          schedulePeer(nextPeerIndex, 150);
           return;
         }
-        setLinkStatus("offline");
-        peer?.destroy();
-        reconnectTimer = window.setTimeout(connect, 5000);
+
+        reconnectTimer = window.setTimeout(() => {
+          if (isCurrentPeer() && nextPeer.disconnected) schedulePeer(nextPeerIndex, 0);
+        }, 1600);
+      });
+      nextPeer.on("error", (error) => {
+        if (!isCurrentPeer()) return;
+        if (error.type === "unavailable-id") {
+          const completedCycle = nextPeerIndex === 0;
+          schedulePeer(nextPeerIndex, completedCycle ? 900 : 120, completedCycle ? "conflict" : "reconnecting");
+          return;
+        }
+        schedulePeer(nextPeerIndex, 500, "offline");
+      });
+      nextPeer.on("close", () => {
+        if (isCurrentPeer()) schedulePeer(nextPeerIndex, 250);
       });
     };
 
@@ -158,12 +210,13 @@ export function useStadiumOrders() {
       if (event.key === ORDERS_KEY) setOrders(readStoredOrders());
     };
 
-    connect();
+    openPeer(0);
     window.addEventListener("storage", syncStoredOrders);
 
     return () => {
       stopped = true;
-      window.clearTimeout(reconnectTimer);
+      generation += 1;
+      clearReconnectTimer();
       window.removeEventListener("storage", syncStoredOrders);
       peer?.destroy();
     };
