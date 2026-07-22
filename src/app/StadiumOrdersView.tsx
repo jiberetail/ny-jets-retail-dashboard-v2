@@ -48,11 +48,10 @@ const statusLabels: Record<StadiumOrderStatus, string> = {
 };
 
 const linkCopy: Record<StadiumOrdersLinkStatus, { label: string; detail: string }> = {
-  live: { label: "Live kiosk connection", detail: "Listening for new stadium orders" },
-  connecting: { label: "Connecting to kiosks", detail: "Opening the stadium order channel" },
-  reconnecting: { label: "Reconnecting", detail: "The order queue remains available" },
-  conflict: { label: "Channel active elsewhere", detail: "Another dashboard is receiving live orders" },
-  offline: { label: "Connection interrupted", detail: "Retrying automatically" },
+  live: { label: "Shared order feed live", detail: "Receiving orders from every connected kiosk" },
+  connecting: { label: "Connecting to order feed", detail: "Loading the shared stadium queue" },
+  reconnecting: { label: "Syncing order feed", detail: "The local order queue remains available" },
+  offline: { label: "Order feed offline", detail: "Changes will sync automatically when the connection returns" },
 };
 
 function formatElapsed(timestamp: string, now: number) {

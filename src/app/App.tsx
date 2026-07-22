@@ -811,7 +811,7 @@ function App() {
             {view === "orders" ? (
               <div className={`orders-topbar-link status-${stadiumOrders.linkStatus}`}>
                 <i />
-                <span><strong>{stadiumOrders.linkStatus === "live" ? "Kiosk link active" : "Connecting kiosk link"}</strong><small>{stadiumOrders.orders.length} stored order{stadiumOrders.orders.length === 1 ? "" : "s"}</small></span>
+                <span><strong>{stadiumOrders.linkStatus === "live" ? "Shared order feed live" : stadiumOrders.linkStatus === "offline" ? "Order feed offline" : "Connecting order feed"}</strong><small>{stadiumOrders.orders.length} synced order{stadiumOrders.orders.length === 1 ? "" : "s"}</small></span>
               </div>
             ) : (
               <>

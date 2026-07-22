@@ -1,18 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
-import { Peer, type DataConnection } from "peerjs";
-
-export const STADIUM_ORDERS_CHANNEL = "jets-stadium-orders-v2";
-export const STADIUM_ORDERS_DASHBOARD_PEER_IDS = [
-  "jibe-jets-stadium-orders-v2",
-  "jibe-jets-stadium-orders-v2-backup-1",
-  "jibe-jets-stadium-orders-v2-backup-2",
-] as const;
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const ORDERS_KEY = "jibe-jets-stadium-orders-v2";
+const MUTATIONS_KEY = "jibe-jets-stadium-orders-mutations-v2";
+const ORDERS_API_URL = "https://ny-jets-retail-orders-v2.vercel.app/api/orders";
+const POLL_INTERVAL_MS = 3000;
+const REQUEST_TIMEOUT_MS = 10000;
 
 export type StadiumOrderService = "concierge" | "suite";
 export type StadiumOrderStatus = "new" | "preparing" | "ready" | "out-for-delivery" | "fulfilled";
-export type StadiumOrdersLinkStatus = "connecting" | "live" | "reconnecting" | "conflict" | "offline";
+export type StadiumOrdersLinkStatus = "connecting" | "live" | "reconnecting" | "offline";
 
 export type StadiumOrderItem = {
   id: string;
@@ -47,21 +43,15 @@ export type StadiumOrder = {
   total: number;
 };
 
-type StadiumOrderCreatedMessage = {
-  type: "stadium-order-created";
-  channel: typeof STADIUM_ORDERS_CHANNEL;
+type PendingMutation = {
+  id: string;
+  kind: "upsert";
   order: StadiumOrder;
+} | {
+  id: string;
+  kind: "delete";
+  orderId: string;
 };
-
-function readStoredOrders() {
-  try {
-    const value = window.localStorage.getItem(ORDERS_KEY);
-    const parsed = value ? JSON.parse(value) : [];
-    return Array.isArray(parsed) ? parsed.filter(isStadiumOrder) : [];
-  } catch {
-    return [];
-  }
-}
 
 function isStadiumOrder(value: unknown): value is StadiumOrder {
   if (!value || typeof value !== "object") return false;
@@ -71,165 +61,251 @@ function isStadiumOrder(value: unknown): value is StadiumOrder {
     && typeof order.id === "string"
     && typeof order.reference === "string"
     && typeof order.createdAt === "string"
+    && typeof order.updatedAt === "string"
+    && typeof order.kioskId === "string"
     && (order.service === "concierge" || order.service === "suite")
     && ["new", "preparing", "ready", "out-for-delivery", "fulfilled"].includes(order.status ?? "")
     && Boolean(order.customer && typeof order.customer.name === "string" && typeof order.customer.phone === "string")
-    && Boolean(order.fulfillment && typeof order.fulfillment.location === "string")
+    && Boolean(order.fulfillment
+      && typeof order.fulfillment.location === "string"
+      && typeof order.fulfillment.instructions === "string")
     && Array.isArray(order.items)
+    && order.items.length > 0
+    && typeof order.itemCount === "number"
+    && typeof order.subtotal === "number"
+    && typeof order.tax === "number"
     && typeof order.total === "number";
 }
 
-function isCreatedMessage(value: unknown): value is StadiumOrderCreatedMessage {
+function readStoredOrders() {
+  try {
+    const value = window.localStorage.getItem(ORDERS_KEY);
+    const parsed: unknown = value ? JSON.parse(value) : [];
+    return Array.isArray(parsed) ? parsed.filter(isStadiumOrder) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredOrders(orders: StadiumOrder[]) {
+  try {
+    window.localStorage.setItem(ORDERS_KEY, JSON.stringify(orders));
+  } catch {
+    // The live queue remains usable if browser storage is unavailable.
+  }
+}
+
+function isPendingMutation(value: unknown): value is PendingMutation {
   if (!value || typeof value !== "object") return false;
-  const message = value as Partial<StadiumOrderCreatedMessage>;
-  return message.type === "stadium-order-created"
-    && message.channel === STADIUM_ORDERS_CHANNEL
-    && isStadiumOrder(message.order);
+  const mutation = value as Partial<PendingMutation>;
+  if (typeof mutation.id !== "string") return false;
+  if (mutation.kind === "upsert") return isStadiumOrder(mutation.order);
+  return mutation.kind === "delete" && typeof mutation.orderId === "string";
+}
+
+function readPendingMutations() {
+  try {
+    const value = window.localStorage.getItem(MUTATIONS_KEY);
+    const parsed: unknown = value ? JSON.parse(value) : [];
+    return Array.isArray(parsed) ? parsed.filter(isPendingMutation) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePendingMutations(mutations: PendingMutation[]) {
+  try {
+    window.localStorage.setItem(MUTATIONS_KEY, JSON.stringify(mutations));
+  } catch {
+    // A later page refresh will recover the last confirmed server state.
+  }
+}
+
+function queueMutation(mutation: PendingMutation) {
+  const pending = readPendingMutations().filter((item) => item.id !== mutation.id);
+  pending.push(mutation);
+  writePendingMutations(pending);
+}
+
+function removeMutation(mutationId: string) {
+  writePendingMutations(readPendingMutations().filter((mutation) => mutation.id !== mutationId));
+}
+
+async function requestOrdersApi(init: RequestInit = {}) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(ORDERS_API_URL, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...init.headers,
+      },
+      cache: "no-store",
+      credentials: "omit",
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function fetchRemoteOrders() {
+  const response = await requestOrdersApi();
+  if (!response.ok) throw new Error(`Order sync failed with status ${response.status}`);
+
+  const payload: unknown = await response.json();
+  const remoteOrders = payload && typeof payload === "object" && "orders" in payload
+    ? (payload as { orders: unknown }).orders
+    : [];
+
+  if (!Array.isArray(remoteOrders)) throw new Error("Order service returned an invalid response");
+  return remoteOrders.filter(isStadiumOrder);
+}
+
+async function upsertRemoteOrder(order: StadiumOrder) {
+  const response = await requestOrdersApi({
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order }),
+  });
+
+  if (!response.ok && response.status !== 410) {
+    throw new Error(`Order update failed with status ${response.status}`);
+  }
+}
+
+async function deleteRemoteOrder(orderId: string) {
+  const response = await requestOrdersApi({
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orderId }),
+  });
+
+  if (!response.ok) throw new Error(`Order deletion failed with status ${response.status}`);
+}
+
+async function flushPendingMutations() {
+  for (const mutation of readPendingMutations()) {
+    if (mutation.kind === "delete") await deleteRemoteOrder(mutation.orderId);
+    else await upsertRemoteOrder(mutation.order);
+    removeMutation(mutation.id);
+  }
 }
 
 export function useStadiumOrders() {
   const [orders, setOrders] = useState<StadiumOrder[]>(readStoredOrders);
   const [linkStatus, setLinkStatus] = useState<StadiumOrdersLinkStatus>("connecting");
   const [lastReceivedOrderId, setLastReceivedOrderId] = useState("");
+  const ordersRef = useRef(orders);
+  const knownOrderIdsRef = useRef(new Set(orders.map((order) => order.id)));
+  const requestSyncRef = useRef<() => void>(() => undefined);
+
+  const replaceOrders = useCallback((nextOrders: StadiumOrder[]) => {
+    ordersRef.current = nextOrders;
+    writeStoredOrders(nextOrders);
+    setOrders(nextOrders);
+  }, []);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(ORDERS_KEY, JSON.stringify(orders));
-    } catch {
-      // Keep the active operations queue usable even if storage is unavailable.
-    }
-  }, [orders]);
-
-  useEffect(() => {
-    let peer: Peer | null = null;
-    let reconnectTimer = 0;
     let stopped = false;
-    let generation = 0;
+    let syncing = false;
+    let syncAgain = false;
+    let migrationComplete = false;
+    let pollTimer = 0;
 
-    const receiveConnection = (connection: DataConnection) => {
-      if (connection.metadata?.channel !== STADIUM_ORDERS_CHANNEL) {
-        connection.close();
+    const scheduleSync = (delay: number) => {
+      window.clearTimeout(pollTimer);
+      if (stopped) return;
+      pollTimer = window.setTimeout(() => void syncOrders(), delay);
+    };
+
+    const syncOrders = async () => {
+      if (stopped) return;
+      if (syncing) {
+        syncAgain = true;
+        return;
+      }
+      if (!navigator.onLine) {
+        setLinkStatus("offline");
+        scheduleSync(POLL_INTERVAL_MS);
         return;
       }
 
-      connection.on("data", (message) => {
-        if (!isCreatedMessage(message)) return;
-        const incoming = message.order;
+      syncing = true;
+      try {
+        if (!migrationComplete) {
+          for (const order of ordersRef.current) queueMutation({ id: order.id, kind: "upsert", order });
+          migrationComplete = true;
+        }
 
-        setOrders((current) => {
-          const existing = current.find((order) => order.id === incoming.id);
-          if (existing) {
-            return current.map((order) => order.id === incoming.id
-              ? { ...incoming, status: order.status, updatedAt: order.updatedAt }
-              : order);
-          }
-          return [incoming, ...current];
-        });
-        setLastReceivedOrderId(incoming.id);
-        connection.send({
-          type: "stadium-order-accepted",
-          channel: STADIUM_ORDERS_CHANNEL,
-          orderId: incoming.id,
-        });
-      });
-    };
+        await flushPendingMutations();
+        const remoteOrders = await fetchRemoteOrders();
+        if (stopped) return;
 
-    const clearReconnectTimer = () => {
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = 0;
-    };
-
-    const schedulePeer = (
-      peerIndex: number,
-      delay: number,
-      status: StadiumOrdersLinkStatus = "reconnecting",
-    ) => {
-      if (stopped) return;
-      const scheduledGeneration = ++generation;
-      const retiredPeer = peer;
-      peer = null;
-      clearReconnectTimer();
-      setLinkStatus(status);
-      retiredPeer?.destroy();
-
-      reconnectTimer = window.setTimeout(() => {
-        if (stopped || scheduledGeneration !== generation) return;
-        openPeer(peerIndex);
-      }, delay);
-    };
-
-    const openPeer = (peerIndex: number) => {
-      if (stopped) return;
-      clearReconnectTimer();
-      const peerGeneration = ++generation;
-      const peerId = STADIUM_ORDERS_DASHBOARD_PEER_IDS[peerIndex];
-      const nextPeer = new Peer(peerId, { debug: 1, pingInterval: 5000 });
-      peer = nextPeer;
-      setLinkStatus(peerIndex === 0 ? "connecting" : "reconnecting");
-
-      const isCurrentPeer = () => !stopped && peerGeneration === generation && peer === nextPeer;
-      const nextPeerIndex = (peerIndex + 1) % STADIUM_ORDERS_DASHBOARD_PEER_IDS.length;
-
-      nextPeer.on("open", () => {
-        if (!isCurrentPeer()) return;
-        clearReconnectTimer();
+        const newOrder = remoteOrders.find((order) => !knownOrderIdsRef.current.has(order.id));
+        knownOrderIdsRef.current = new Set(remoteOrders.map((order) => order.id));
+        replaceOrders(remoteOrders);
+        if (newOrder) setLastReceivedOrderId(newOrder.id);
         setLinkStatus("live");
-      });
-      nextPeer.on("connection", receiveConnection);
-      nextPeer.on("disconnected", () => {
-        if (!isCurrentPeer()) return;
-        setLinkStatus("reconnecting");
-        clearReconnectTimer();
-
-        try {
-          nextPeer.reconnect();
-        } catch {
-          schedulePeer(nextPeerIndex, 150);
-          return;
-        }
-
-        reconnectTimer = window.setTimeout(() => {
-          if (isCurrentPeer() && nextPeer.disconnected) schedulePeer(nextPeerIndex, 0);
-        }, 1600);
-      });
-      nextPeer.on("error", (error) => {
-        if (!isCurrentPeer()) return;
-        if (error.type === "unavailable-id") {
-          const completedCycle = nextPeerIndex === 0;
-          schedulePeer(nextPeerIndex, completedCycle ? 900 : 120, completedCycle ? "conflict" : "reconnecting");
-          return;
-        }
-        schedulePeer(nextPeerIndex, 500, "offline");
-      });
-      nextPeer.on("close", () => {
-        if (isCurrentPeer()) schedulePeer(nextPeerIndex, 250);
-      });
+      } catch {
+        if (!stopped) setLinkStatus(navigator.onLine ? "reconnecting" : "offline");
+      } finally {
+        syncing = false;
+        const delay = syncAgain ? 0 : POLL_INTERVAL_MS;
+        syncAgain = false;
+        scheduleSync(delay);
+      }
     };
 
-    const syncStoredOrders = (event: StorageEvent) => {
-      if (event.key === ORDERS_KEY) setOrders(readStoredOrders());
+    requestSyncRef.current = () => scheduleSync(0);
+
+    const reconnect = () => {
+      setLinkStatus("connecting");
+      scheduleSync(0);
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") scheduleSync(0);
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === MUTATIONS_KEY) scheduleSync(0);
     };
 
-    openPeer(0);
-    window.addEventListener("storage", syncStoredOrders);
+    void syncOrders();
+    window.addEventListener("online", reconnect);
+    window.addEventListener("offline", reconnect);
+    window.addEventListener("storage", handleStorage);
+    document.addEventListener("visibilitychange", handleVisibility);
 
     return () => {
       stopped = true;
-      generation += 1;
-      clearReconnectTimer();
-      window.removeEventListener("storage", syncStoredOrders);
-      peer?.destroy();
+      window.clearTimeout(pollTimer);
+      requestSyncRef.current = () => undefined;
+      window.removeEventListener("online", reconnect);
+      window.removeEventListener("offline", reconnect);
+      window.removeEventListener("storage", handleStorage);
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, []);
+  }, [replaceOrders]);
 
   const updateOrderStatus = useCallback((orderId: string, status: StadiumOrderStatus) => {
-    const updatedAt = new Date().toISOString();
-    setOrders((current) => current.map((order) => order.id === orderId ? { ...order, status, updatedAt } : order));
-  }, []);
+    const target = ordersRef.current.find((order) => order.id === orderId);
+    if (!target || target.status === status) return;
+
+    const updatedOrder = { ...target, status, updatedAt: new Date().toISOString() };
+    const nextOrders = ordersRef.current.map((order) => order.id === orderId ? updatedOrder : order);
+    replaceOrders(nextOrders);
+    queueMutation({ id: orderId, kind: "upsert", order: updatedOrder });
+    requestSyncRef.current();
+  }, [replaceOrders]);
 
   const deleteOrder = useCallback((orderId: string) => {
-    setOrders((current) => current.filter((order) => order.id !== orderId));
-  }, []);
+    replaceOrders(ordersRef.current.filter((order) => order.id !== orderId));
+    knownOrderIdsRef.current.delete(orderId);
+    queueMutation({ id: orderId, kind: "delete", orderId });
+    requestSyncRef.current();
+  }, [replaceOrders]);
 
   return {
     orders,
