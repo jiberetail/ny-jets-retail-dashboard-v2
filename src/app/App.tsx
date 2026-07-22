@@ -49,8 +49,10 @@ import {
   Zap,
 } from "lucide-react";
 import jibeRetailLogo from "../imports/jibe-retail-logo.png";
+import { StadiumOrdersView } from "./StadiumOrdersView";
+import { useStadiumOrders } from "./stadiumOrders";
 
-type ViewId = "overview" | "roi" | "funnel" | "services" | "merchandise" | "experience";
+type ViewId = "overview" | "orders" | "roi" | "funnel" | "services" | "merchandise" | "experience";
 type PeriodKey = "game" | "four" | "season";
 
 type GamePoint = {
@@ -106,6 +108,7 @@ const periodOptions: Array<{ key: PeriodKey; label: string; games: number }> = [
 
 const navItems: Array<{ id: ViewId; label: string; description: string; icon: LucideIcon }> = [
   { id: "overview", label: "Executive Overview", description: "Revenue and operating pulse", icon: LayoutDashboard },
+  { id: "orders", label: "Stadium Orders", description: "Live pickup and suite queue", icon: ShoppingCart },
   { id: "roi", label: "Revenue & ROI", description: "Contribution and payback", icon: BadgeDollarSign },
   { id: "funnel", label: "Commerce Funnel", description: "Engagement to purchase", icon: GitBranch },
   { id: "services", label: "Service Performance", description: "Four kiosk journeys", icon: PackageCheck },
@@ -233,6 +236,7 @@ function App() {
   const [projectedGames, setProjectedGames] = useState(9);
   const [conversionLift, setConversionLift] = useState(12);
   const [merchMetric, setMerchMetric] = useState<"revenue" | "demand">("revenue");
+  const stadiumOrders = useStadiumOrders();
 
   const selectedPoints = useMemo(() => {
     const gameCount = periodOptions.find((option) => option.key === period)?.games ?? 9;
@@ -749,8 +753,19 @@ function App() {
     );
   };
 
+  const renderOrders = () => (
+    <StadiumOrdersView
+      orders={stadiumOrders.orders}
+      linkStatus={stadiumOrders.linkStatus}
+      lastReceivedOrderId={stadiumOrders.lastReceivedOrderId}
+      onStatus={stadiumOrders.updateOrderStatus}
+      onDelete={stadiumOrders.deleteOrder}
+    />
+  );
+
   const viewContent: Record<ViewId, () => React.ReactNode> = {
     overview: renderOverview,
+    orders: renderOrders,
     roi: renderROI,
     funnel: renderFunnel,
     services: renderServices,
@@ -773,7 +788,9 @@ function App() {
             <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)} aria-current={view === id ? "page" : undefined}>
               <Icon size={20} />
               <span><strong>{label}</strong><small>{description}</small></span>
-              <ChevronRight size={16} />
+              {id === "orders" && stadiumOrders.orders.filter((order) => order.status !== "fulfilled").length > 0
+                ? <b className="nav-order-count">{stadiumOrders.orders.filter((order) => order.status !== "fulfilled").length}</b>
+                : <ChevronRight size={16} />}
             </button>
           ))}
         </nav>
@@ -789,14 +806,23 @@ function App() {
           <div className="topbar-title">
             <span>{activeNav.description}</span>
             <h1>{activeNav.label}</h1>
-            <p><MapPin size={15} /> MetLife Stadium <i /> {activePeriod.label}</p>
+            <p><MapPin size={15} /> MetLife Stadium <i /> {view === "orders" ? "Live operations" : activePeriod.label}</p>
           </div>
           <div className="topbar-actions">
-            <div className="period-control" aria-label="Reporting period">
-              {periodOptions.map((option) => <button key={option.key} className={period === option.key ? "active" : ""} onClick={() => setPeriod(option.key)}>{option.label}</button>)}
-            </div>
-            <button className="icon-button" title="Refresh data" aria-label="Refresh data" onClick={() => setLastUpdated(new Date())}><RefreshCw size={19} /></button>
-            <button className="export-button" onClick={exportSummary}><Download size={18} /> Export</button>
+            {view === "orders" ? (
+              <div className={`orders-topbar-link status-${stadiumOrders.linkStatus}`}>
+                <i />
+                <span><strong>{stadiumOrders.linkStatus === "live" ? "Kiosk link active" : "Connecting kiosk link"}</strong><small>{stadiumOrders.orders.length} stored order{stadiumOrders.orders.length === 1 ? "" : "s"}</small></span>
+              </div>
+            ) : (
+              <>
+                <div className="period-control" aria-label="Reporting period">
+                  {periodOptions.map((option) => <button key={option.key} className={period === option.key ? "active" : ""} onClick={() => setPeriod(option.key)}>{option.label}</button>)}
+                </div>
+                <button className="icon-button" title="Refresh data" aria-label="Refresh data" onClick={() => setLastUpdated(new Date())}><RefreshCw size={19} /></button>
+                <button className="export-button" onClick={exportSummary}><Download size={18} /> Export</button>
+              </>
+            )}
           </div>
         </header>
 
