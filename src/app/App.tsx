@@ -118,8 +118,7 @@ const navItems: Array<{ id: ViewId; label: string; description: string; icon: Lu
 
 const colors = {
   green: "#125740",
-  greenBright: "#1f8a5f",
-  mint: "#8fd6b6",
+  steel: "#5d7382",
   charcoal: "#14201b",
   cyan: "#1d8fa6",
   blue: "#3b6ea8",
@@ -287,7 +286,7 @@ function App() {
   const funnelData = [
     { label: "Kiosk sessions", value: stats.sessions, rate: 100, color: colors.charcoal },
     { label: "Product views", value: stats.productViews, rate: (stats.productViews / stats.sessions) * 100, color: colors.green },
-    { label: "Added to cart", value: stats.cartAdds, rate: (stats.cartAdds / stats.sessions) * 100, color: colors.greenBright },
+    { label: "Added to cart", value: stats.cartAdds, rate: (stats.cartAdds / stats.sessions) * 100, color: colors.steel },
     { label: "Checkout started", value: stats.checkoutStarts, rate: (stats.checkoutStarts / stats.sessions) * 100, color: colors.cyan },
     { label: "Order confirmed", value: stats.orders, rate: (stats.orders / stats.sessions) * 100, color: colors.blue },
   ];
